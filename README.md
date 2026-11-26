@@ -1,5 +1,7 @@
 # YOLO Regression Check
 
+**English** · [简体中文](README.zh-CN.md)
+
 Compare a baseline and a candidate YOLO model on the same labeled validation set. The HTML report shows changes in recall, precision, and false positives for each class and puts ground truth, baseline predictions, and candidate predictions side by side for affected images.
 
 Use the report to review newly missed objects, investigate low-confidence predictions or possible class mix-ups, and catch unacceptable recall drops in CI. The CLI uses Python's standard library and runs offline by default.
@@ -47,7 +49,7 @@ Set `--max-recall-drop-pp` to the maximum allowed recall drop in **percentage po
 
 ## Optional local Ollama diagnostics
 
-By default, the CLI investigates the class with the most newly missed objects. It groups the objects by bounding-box area and looks for overlapping predictions that are below the confidence threshold or belong to a different class.
+By default, the CLI investigates the class with the most newly missed objects. It groups annotations by bounding-box area, then checks whether new misses overlap a same-class prediction below the confidence threshold or a prediction of a different class at or above it.
 
 Add `--ollama-model YOUR_LOCAL_MODEL` to let a model running in Ollama choose the next check based on the aggregate results. Requests go to `127.0.0.1:11434` and include only aggregate findings and predefined check names. If Ollama is unavailable or returns an invalid response, the CLI completes the remaining checks using its built-in rules. The CI outcome is determined by the configured recall threshold. [Ollama structured outputs documentation](https://docs.ollama.com/capabilities/structured-outputs)
 
