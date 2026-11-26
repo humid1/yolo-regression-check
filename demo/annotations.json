@@ -1,0 +1,21 @@
+{
+  "images": [
+    {"id": 1, "file_name": "line-001.jpg", "width": 320, "height": 180},
+    {"id": 2, "file_name": "line-002.jpg", "width": 320, "height": 180},
+    {"id": 3, "file_name": "line-003.jpg", "width": 320, "height": 180},
+    {"id": 4, "file_name": "line-004.jpg", "width": 320, "height": 180},
+    {"id": 5, "file_name": "line-005.jpg", "width": 320, "height": 180}
+  ],
+  "categories": [
+    {"id": 0, "name": "垫片"},
+    {"id": 1, "name": "螺栓"}
+  ],
+  "annotations": [
+    {"id": 1, "image_id": 1, "category_id": 0, "bbox": [64, 78, 25, 24]},
+    {"id": 2, "image_id": 2, "category_id": 0, "bbox": [75, 36, 120, 104]},
+    {"id": 3, "image_id": 2, "category_id": 1, "bbox": [233, 87, 18, 27]},
+    {"id": 4, "image_id": 3, "category_id": 0, "bbox": [185, 110, 26, 24]},
+    {"id": 5, "image_id": 4, "category_id": 0, "bbox": [117, 61, 29, 28]},
+    {"id": 6, "image_id": 5, "category_id": 1, "bbox": [104, 60, 42, 47]}
+  ]
+}

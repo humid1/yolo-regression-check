@@ -1,0 +1,8 @@
+[
+  {"image_id": 1, "category_id": 0, "bbox": [64, 78, 25, 25], "score": 0.24},
+  {"image_id": 2, "category_id": 0, "bbox": [74, 37, 122, 105], "score": 0.95},
+  {"image_id": 2, "category_id": 1, "bbox": [235, 87, 18, 26], "score": 0.88},
+  {"image_id": 3, "category_id": 1, "bbox": [185, 111, 26, 24], "score": 0.89},
+  {"image_id": 4, "category_id": 0, "bbox": [116, 61, 28, 27], "score": 0.71},
+  {"image_id": 5, "category_id": 1, "bbox": [105, 61, 40, 46], "score": 0.93}
+]
