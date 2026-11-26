@@ -1,5 +1,10 @@
 __pycache__/
 *.py[cod]
 /.codegraph/
+/.venv/
+/*.egg-info/
+/build/
+/dist/
 /report.html
 /demo-report.html
+/reports/

@@ -53,11 +53,36 @@ python -m yolo_regression --annotations instances_val.json --baseline baseline/p
 
 加上 `--ollama-model YOUR_LOCAL_MODEL`，即可让本地 Ollama 模型根据已收集的统计选择下一项检查。请求发往 `127.0.0.1:11434`，只包含汇总结果和预定义的检查名称。Ollama 不可用或响应无效时，工具会使用内置规则完成剩余检查。CI 结果由配置的召回阈值决定。 [Ollama 结构化输出文档](https://docs.ollama.com/capabilities/structured-outputs)
 
+## 接入 Claude Code、Codex 或其他 MCP 客户端
+
+在本仓库目录下安装可选的 MCP 依赖。需要隔离依赖时，可以先激活 Python 虚拟环境。
+
+```sh
+python -m pip install -e ".[mcp]"
+```
+
+把下面的 `/absolute/path/to/python` 换成安装依赖时使用的 Python 解释器，把 `/absolute/path/to/workspace` 换成存放验证数据的目录。试跑示例时，将工作目录设为本仓库根目录即可。
+
+```sh
+claude mcp add --transport stdio yolo-regression -- "/absolute/path/to/python" -m yolo_regression.mcp_server --workspace "/absolute/path/to/workspace"
+codex mcp add yolo-regression -- "/absolute/path/to/python" -m yolo_regression.mcp_server --workspace "/absolute/path/to/workspace"
+```
+
+执行所用客户端对应的命令，通过 `claude mcp list` 或 `codex mcp list` 确认注册后，开启新会话。其他本地 MCP 客户端可用同一个解释器和参数，通过 `stdio` 连接。 [Claude Code MCP 配置](https://code.claude.com/docs/en/mcp) · [Codex MCP 配置](https://developers.openai.com/codex/mcp)
+
+试着让客户端用 `demo/annotations.json` 对比 `demo/baseline.json` 和 `demo/candidate.json`，并设置 5 个百分点的召回降幅阈值。`compare_yolo_predictions` 工具会返回结构化诊断摘要、阈值检查结果和完整 HTML 报告路径。超出阈值时仍会生成报告。所有路径解析后都须位于 `--workspace` 目录内，每次调用默认在 `reports/` 下生成一份新报告，已有报告会保留。
+
+### 使用 Skill
+
+仓库自带 [Claude Code Skill](.claude/skills/yolo-regression-check/SKILL.md) 和 [Codex Skill](.agents/skills/yolo-regression-check/SKILL.md)。可以在本仓库中启动客户端，也可以把对应的 `yolo-regression-check` 目录复制到自己项目的同一 Skill 位置。在 Claude Code 中调用 `/yolo-regression-check`，在 Codex 中调用 `$yolo-regression-check`。Skill 优先使用 MCP 工具，也支持直接运行 CLI。 [Claude Code Skills](https://code.claude.com/docs/en/skills) · [Codex Skills](https://developers.openai.com/codex/skills)
+
 ## 运行测试
 
 ```sh
 python -m unittest discover -s tests -v
 ```
+
+安装可选的 MCP 依赖后，测试会包含 `stdio` 集成测试。
 
 ## 许可证
 

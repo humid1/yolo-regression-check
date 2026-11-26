@@ -53,11 +53,36 @@ By default, the CLI investigates the class with the most newly missed objects. I
 
 Add `--ollama-model YOUR_LOCAL_MODEL` to let a model running in Ollama choose the next check based on the aggregate results. Requests go to `127.0.0.1:11434` and include only aggregate findings and predefined check names. If Ollama is unavailable or returns an invalid response, the CLI completes the remaining checks using its built-in rules. The CI outcome is determined by the configured recall threshold. [Ollama structured outputs documentation](https://docs.ollama.com/capabilities/structured-outputs)
 
+## Use with Claude Code, Codex, or another MCP client
+
+Install the optional MCP extra from this repository. Use a virtual environment if you want to keep the dependencies isolated.
+
+```sh
+python -m pip install -e ".[mcp]"
+```
+
+In the commands below, replace `/absolute/path/to/python` with the interpreter you used to install the extra, and replace `/absolute/path/to/workspace` with the directory that contains your validation data. To try the demo, use the root of this repository as the workspace.
+
+```sh
+claude mcp add --transport stdio yolo-regression -- "/absolute/path/to/python" -m yolo_regression.mcp_server --workspace "/absolute/path/to/workspace"
+codex mcp add yolo-regression -- "/absolute/path/to/python" -m yolo_regression.mcp_server --workspace "/absolute/path/to/workspace"
+```
+
+Run the line for your client. Use `claude mcp list` or `codex mcp list` to verify registration, then start a new session. Other local MCP clients can use the same Python interpreter and arguments with the `stdio` transport. [Claude Code MCP setup](https://code.claude.com/docs/en/mcp) · [Codex MCP setup](https://developers.openai.com/codex/mcp)
+
+Ask the client to compare `demo/baseline.json` and `demo/candidate.json` using `demo/annotations.json` and a 5-percentage-point recall gate. The `compare_yolo_predictions` tool returns a structured summary, the gate status, and a path to the full HTML report. A failed gate still returns a report. Paths must resolve inside `--workspace`. By default, each call creates a new file under `reports/` and leaves existing reports intact.
+
+### Use the Skill
+
+The repository includes a [Claude Code Skill](.claude/skills/yolo-regression-check/SKILL.md) and a [Codex Skill](.agents/skills/yolo-regression-check/SKILL.md). Start the client in this checkout or copy the corresponding `yolo-regression-check` skill folder into the same skill location in your own project. Invoke `/yolo-regression-check` in Claude Code or `$yolo-regression-check` in Codex. The Skill uses the MCP tool when available and can run the CLI directly otherwise. [Claude Code Skills](https://code.claude.com/docs/en/skills) · [Codex Skills](https://developers.openai.com/codex/skills)
+
 ## Run the tests
 
 ```sh
 python -m unittest discover -s tests -v
 ```
+
+Install the optional MCP extra to include the stdio integration test.
 
 ## License
 
