@@ -1,7 +1,10 @@
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
+from math import isclose
 
 from .inputs import Box, Dataset, Detection, Id, Label
+
+DEFAULT_LOCALIZATION_DROP = 0.1
 
 
 @dataclass
@@ -23,6 +26,7 @@ class ClassChange:
     recovered: int
     added_fp: int
     resolved_fp: int
+    localization_regressions: int
 
     @property
     def recall_drop_pp(self) -> float:
@@ -43,10 +47,18 @@ class FalsePositiveChanges:
 
 
 @dataclass(frozen=True)
+class LocalizationChange:
+    label: Label
+    baseline_iou: float
+    candidate_iou: float
+
+
+@dataclass(frozen=True)
 class ImageChange:
     image_id: Id
     new_misses: list[Label]
     false_positives: FalsePositiveChanges
+    localization: tuple[LocalizationChange, ...] = ()
 
     @property
     def added_fp(self) -> int:
@@ -64,6 +76,7 @@ class Comparison:
     candidate_by_image: dict[Id, list[Detection]]
     confidence: float
     iou: float
+    min_localization_drop: float
 
 
 def overlap(prediction: Box, label: Box, crowd: bool = False) -> float:
@@ -148,7 +161,7 @@ def _pair_false_positives(baseline: list[Detection], candidate: list[Detection],
 
 
 def compare(dataset: Dataset, baseline: list[Detection], candidate: list[Detection],
-            confidence: float, iou: float) -> Comparison:
+            confidence: float, iou: float, min_localization_drop: float = DEFAULT_LOCALIZATION_DROP) -> Comparison:
     labels_by_group = defaultdict(list)
     labels_by_image = defaultdict(list)
     for label in dataset.labels:
@@ -168,6 +181,18 @@ def compare(dataset: Dataset, baseline: list[Detection], candidate: list[Detecti
     missed = Counter(dataset.labels[index].category_id for index in new_miss_ids)
     recovered = Counter(dataset.labels[index].category_id for index in recovered_ids)
 
+    localization = defaultdict(list)
+    localization_counts = Counter()
+    for label in dataset.labels:
+        if label.index not in before.matches or label.index not in after.matches:
+            continue
+        old_iou = overlap(before.matches[label.index].box, label.box)
+        new_iou = overlap(after.matches[label.index].box, label.box)
+        drop = old_iou - new_iou
+        if drop > 0 and (drop >= min_localization_drop or isclose(drop, min_localization_drop, abs_tol=1e-12)):
+            localization[label.image_id].append(LocalizationChange(label, old_iou, new_iou))
+            localization_counts[label.category_id] += 1
+
     images = []
     added = Counter()
     resolved = Counter()
@@ -177,14 +202,16 @@ def compare(dataset: Dataset, baseline: list[Detection], candidate: list[Detecti
                                            after.false_positives.get(image_id, []), iou)
         added.update(box.category_id for box in fp_changes.added)
         resolved.update(box.category_id for box in fp_changes.resolved)
-        if image_misses or fp_changes.added or fp_changes.resolved:
-            images.append(ImageChange(image_id, image_misses, fp_changes))
-    images.sort(key=lambda item: (-len(item.new_misses), -item.added_fp, -len(item.false_positives.resolved)))
+        localization_changes = tuple(localization.get(image_id, ()))
+        if image_misses or fp_changes.added or fp_changes.resolved or localization_changes:
+            images.append(ImageChange(image_id, image_misses, fp_changes, localization_changes))
+    images.sort(key=lambda item: (-len(item.new_misses), -item.added_fp,
+                                   -len(item.localization), -len(item.false_positives.resolved)))
 
     classes = [
         ClassChange(category_id, name, total[category_id], before_tp[category_id], after_tp[category_id],
                     before_fp[category_id], after_fp[category_id], missed[category_id], recovered[category_id],
-                    added[category_id], resolved[category_id])
+                    added[category_id], resolved[category_id], localization_counts[category_id])
         for category_id, name in dataset.categories.items()
         if total[category_id] or before_fp[category_id] or after_fp[category_id]
     ]
@@ -194,4 +221,4 @@ def compare(dataset: Dataset, baseline: list[Detection], candidate: list[Detecti
     for detection in candidate:
         candidate_by_image[detection.image_id].append(detection)
     return Comparison(dataset, before, after, classes, images, dict(labels_by_image),
-                      dict(candidate_by_image), confidence, iou)
+                      dict(candidate_by_image), confidence, iou, min_localization_drop)

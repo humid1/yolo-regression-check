@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from math import isclose
 from typing import Literal
 
-from .evaluation import Comparison
+from .evaluation import Comparison, ImageChange
 
 Metric = Literal["recall_drop_pp", "new_misses", "new_false_positives"]
 GateStatus = Literal["not_configured", "passed", "failed"]
@@ -80,3 +80,15 @@ def evaluate_gate(comparison: Comparison, policy: GatePolicy) -> GateResult:
                 continue
             failures.append(GateFailure(row.category_id, row.name, metric, actual, limit))
     return GateResult("failed" if failures else "passed", limits, category_ids, failures)
+
+
+def ranked_samples(comparison: Comparison, gate: GateResult) -> list[tuple[ImageChange, bool]]:
+    missed_classes = {item.category_id for item in gate.failures if item.metric in ("new_misses", "recall_drop_pp")}
+    false_positive_classes = {item.category_id for item in gate.failures if item.metric == "new_false_positives"}
+    evidence = []
+    remaining = []
+    for row in comparison.images:
+        contributes = (any(label.category_id in missed_classes for label in row.new_misses)
+                       or any(box.category_id in false_positive_classes for box in row.false_positives.added))
+        (evidence if contributes else remaining).append((row, contributes))
+    return evidence + remaining

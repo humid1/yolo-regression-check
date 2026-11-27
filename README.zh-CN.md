@@ -37,7 +37,21 @@ python -m yolo_regression --annotations instances_val.json --baseline baseline/p
 
 在同一张图的同一类别内，工具按置信度从高到低处理预测，同时满足置信度和 IoU 阈值时，会匹配 IoU 最大且尚未匹配的标注。`iscrowd` 标注不计入召回率的分母。未匹配的同类预测有足够面积与 `iscrowd` 标注重叠时，不计为误检。
 
-工具再按图片、类别和所选的 IoU 阈值，对两版误检框做一对一匹配。配对的是持续误检，未配对的候选框是新增误检，未配对的基准框是消除的误检。因此，误检框换到图片的另一处时，即使总数相同，也可能同时记录一个新增和一个消除的误检。可用 `--top` 限制 HTML 样本数，样本依次按新增漏检、新增误检和消除误检数量排序。
+工具再按图片、类别和所选的 IoU 阈值，对两版误检框做一对一匹配。配对的是持续误检，未配对的候选框是新增误检，未配对的基准框是消除的误检。因此，误检框换到图片的另一处时，即使总数相同，也可能同时记录一个新增和一个消除的误检。
+
+两版都检出同一标注时，报告会突出定位退步并显示各自的 IoU。`--min-localization-drop` 控制纳入报告的最小绝对降幅，默认是在 0 到 1 的 IoU 刻度上下降 `0.1`。可用 `--top` 限制 HTML 预览数，触发门禁规则的样本优先展示。
+
+## 核对验证集覆盖范围
+
+让评估程序记录每张实际处理完成的图片 ID，包括零检出的图片，并保存本次评估使用的类别映射。覆盖记录包含 `image_ids` 数组和由 `{id, name}` 对象组成的 `categories` 数组。[示例覆盖记录](demo/coverage.json) 对应仓库中的合成数据。对比自己的模型时，应使用每次评估实际产生的记录。
+
+```sh
+python -m yolo_regression.manifest --annotations demo/annotations.json --predictions demo/baseline.json --coverage demo/coverage.json --revision baseline-v1 > baseline-manifest.json
+python -m yolo_regression.manifest --annotations demo/annotations.json --predictions demo/candidate-equal-recall.json --coverage demo/coverage.json --revision candidate-v2 > candidate-manifest.json
+python -m yolo_regression --annotations demo/annotations.json --baseline demo/baseline.json --candidate demo/candidate-equal-recall.json --baseline-manifest baseline-manifest.json --candidate-manifest candidate-manifest.json --output reports/verified.html --json-output reports/verified.json
+```
+
+提供两份运行清单后，如果图片覆盖、类别映射或文件哈希对不上，程序在比较前返回退出码 `2`。两份清单应对应本次比较使用的同一份标注文件，哈希按原始字节计算。报告会记录三个输入文件的 SHA-256。可直接传入 `--baseline-revision` 和 `--candidate-revision`，也可在生成清单时记录来源版本。
 
 ## CI 检查
 
@@ -56,7 +70,7 @@ python -m yolo_regression --annotations instances_val.json --baseline baseline/p
 python -m yolo_regression --annotations demo/annotations.json --baseline demo/baseline.json --candidate demo/candidate-equal-recall.json --gate-class 0 --max-new-misses 0 --output reports/yolo-regression.html --json-output reports/yolo-regression.json
 ```
 
-垫片类别的召回率仍为 75%，但一处新增漏检会使上面的命令失败。把本项目中的 [GitHub Actions 示例](examples/github-actions/yolo-regression.yml) 复制到 `.github/workflows/yolo-regression.yml`，即可试跑同样的检查。门禁失败后，任务摘要仍会列出失败类别和相关图片，HTML 和 JSON 报告也会保留为工作流产物。用于生产时，替换成自己的数据路径和阈值。 [GitHub 任务摘要](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#adding-a-job-summary) · [工作流产物](https://docs.github.com/en/actions/tutorials/store-and-share-data)
+垫片类别的召回率仍为 75%，但一处新增漏检会使上面的命令失败。把本项目中的 [GitHub Actions 示例](examples/github-actions/yolo-regression.yml) 复制到 `.github/workflows/yolo-regression.yml`，即可试跑同样的检查。PR 检查从目标提交读取基准预测和标注，从检出的合并提交读取候选预测。手动运行时，两次 checkout 都使用所选版本。任务摘要会记录双方版本并列出触发规则的图片，门禁失败时仍会保留 HTML 和 JSON 报告。用于生产时，替换成自己的数据路径和阈值。 [GitHub 任务摘要](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#adding-a-job-summary) · [工作流产物](https://docs.github.com/en/actions/tutorials/store-and-share-data)
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -89,7 +103,7 @@ codex mcp add yolo-regression -- "/absolute/path/to/python" -m yolo_regression.m
 
 试着让客户端用 `demo/annotations.json` 对比 `demo/baseline.json` 和 `demo/candidate.json`，并设置 5 个百分点的召回降幅阈值。`compare_yolo_predictions` 工具会返回结构化诊断摘要、阈值检查结果和完整 HTML 报告路径。超出阈值时仍会生成报告。所有路径解析后都须位于 `--workspace` 目录内，每次调用默认在 `reports/` 下生成一份新报告，已有报告会保留。
 
-MCP 工具也接受 `max_new_misses`、`max_new_false_positives` 和 `gate_class_ids`。如果某类指标超过阈值，可从 `gate_failures` 获取具体规则和实测值。
+MCP 工具也接受 `max_new_misses`、`max_new_false_positives` 和 `gate_class_ids`。如果某类指标超过阈值，可从 `gate_failures` 获取具体规则和实测值。传入 `baseline_manifest` 和 `candidate_manifest` 可核对输入覆盖，通过 `min_localization_drop` 设置定位退步的报告阈值。
 
 ### 使用 Skill
 

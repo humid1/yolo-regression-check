@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .gates import GatePolicy
+from .manifest import Sources
 from .summary import ComparisonSummary, build_summary
 from .workflow import ComparisonOptions, run_comparison
 
@@ -50,6 +51,11 @@ def create_server(workspace: Path):
         max_new_misses: int | None = None,
         max_new_false_positives: int | None = None,
         gate_class_ids: list[int] | None = None,
+        min_localization_drop: float = ComparisonOptions.min_localization_drop,
+        baseline_manifest: str | None = None,
+        candidate_manifest: str | None = None,
+        baseline_revision: str | None = None,
+        candidate_revision: str | None = None,
     ) -> ComparisonSummary:
         """Compare two COCO prediction JSON arrays on the same COCO annotation JSON.
 
@@ -58,6 +64,8 @@ def create_server(workspace: Path):
         and top (maximum report previews) as needed. Limits apply per class. Use
         percentage points for max_recall_drop_pp and counts for max_new_misses and
         max_new_false_positives. Use gate_class_ids to check specific classes.
+        Provide both run manifests to check processed image IDs, categories and file hashes.
+        Revisions are optional provenance labels. min_localization_drop is an absolute IoU difference.
         A failed gate still produces a report. Set output_html to an unused .html
         path or let the tool create a new report in reports/. The summary includes
         up to ten classes and five sample previews. Read the HTML report for the
@@ -74,12 +82,18 @@ def create_server(workspace: Path):
         if output.exists():
             raise ValueError("output_html already exists. Choose another path.")
         images = _workspace_path(workspace, images_dir, "images_dir") if images_dir is not None else None
+        sources = Sources(
+            _json_file(workspace, baseline_manifest, "baseline_manifest") if baseline_manifest is not None else None,
+            _json_file(workspace, candidate_manifest, "candidate_manifest") if candidate_manifest is not None else None,
+            baseline_revision, candidate_revision,
+        )
 
         gate = GatePolicy(max_recall_drop_pp, max_new_misses, max_new_false_positives, tuple(gate_class_ids or ()))
-        options = ComparisonOptions(confidence=confidence, iou=iou, top=top, gate=gate)
+        options = ComparisonOptions(confidence=confidence, iou=iou, top=top, gate=gate,
+                                    min_localization_drop=min_localization_drop)
         result = run_comparison(annotation_file, baseline_file, candidate_file, output,
-                                options=options, images_dir=images, overwrite=False)
-        return build_summary(result.comparison, result.diagnosis, result.gate, result.report_path,
+                                options=options, images_dir=images, overwrite=False, sources=sources)
+        return build_summary(result.comparison, result.diagnosis, result.gate, result.report_path, result.provenance,
                              class_limit=10, sample_limit=min(top, 5))
 
     return server

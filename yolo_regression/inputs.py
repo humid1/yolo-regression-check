@@ -1,7 +1,9 @@
 import json
 import math
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 Id = int | str
 Box = tuple[float, float, float, float]
@@ -39,9 +41,17 @@ class Dataset:
     labels: list[Label]
 
 
-def _read_json(path: Path):
+@dataclass(frozen=True)
+class JsonDocument:
+    path: Path
+    value: Any
+    sha256: str
+
+
+def read_json_document(path: Path) -> JsonDocument:
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
+        content = path.read_bytes()
+        return JsonDocument(path, json.loads(content.decode("utf-8-sig")), sha256(content).hexdigest())
     except (ValueError, OSError) as error:
         raise ValueError(f"{path} — {error}") from error
 
@@ -101,8 +111,9 @@ def _references(row, context, dataset):
     return image_id, category_id
 
 
-def load_dataset(path: Path) -> Dataset:
-    raw = _read_json(path)
+def load_dataset(path: Path | JsonDocument) -> Dataset:
+    document = read_json_document(path) if isinstance(path, Path) else path
+    path, raw = document.path, document.value
     if not isinstance(raw, dict):
         raise ValueError(f"{path} 应为包含 images、categories、annotations 的 JSON 对象")
 
@@ -138,9 +149,10 @@ def load_dataset(path: Path) -> Dataset:
     return dataset
 
 
-def load_predictions(path: Path, dataset: Dataset) -> list[Detection]:
+def load_predictions(path: Path | JsonDocument, dataset: Dataset) -> list[Detection]:
+    document = read_json_document(path) if isinstance(path, Path) else path
     predictions = []
-    for row, context in _rows(_read_json(path), str(path)):
+    for row, context in _rows(document.value, str(document.path)):
         image_id, category_id = _references(row, context, dataset)
         score = _number(row.get("score"), f"{context} score")
         if not 0 <= score <= 1:

@@ -44,6 +44,8 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                                  ["recall_drop_pp", "new_misses"])
                 self.assertEqual(summary["class_changes"][0]["recall_drop_pp"], 25)
                 self.assertEqual(summary["new_misses"], 2)
+                self.assertFalse(summary["provenance"]["coverage_verified"])
+                self.assertTrue(summary["sample_previews"][0]["gate_evidence"])
                 self.assertEqual(len(summary["findings"]), 2)
 
                 report = Path(summary["report_path"])
@@ -55,6 +57,7 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(report.read_bytes(), original)
 
                 for arguments in ({**args, "candidate": "../outside.json"},
+                                  {**args, "baseline_manifest": "../outside.json"},
                                   {**args, "output_html": "../outside.html"}):
                     rejected = await session.call_tool(tool_name, arguments)
                     self.assertTrue(rejected.isError, rejected.content)

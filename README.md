@@ -37,7 +37,21 @@ python -m yolo_regression --annotations instances_val.json --baseline baseline/p
 
 For each image and class, the CLI processes predictions in descending confidence order. Each prediction is matched to the unmatched annotation with the highest IoU, provided both thresholds are met. Crowd annotations are excluded from the recall denominator. An unmatched prediction is excluded from the false-positive count when enough of its area overlaps a crowd annotation of the same class.
 
-The tool then pairs false positives across runs one to one by image, class, and the selected IoU threshold. Paired boxes are persistent false positives. Unpaired candidate boxes are new, while unpaired baseline boxes are resolved. A false positive that moves to a different part of an image can therefore appear as one new and one resolved box even when the total count stays the same. Use `--top` to limit HTML previews, which prioritize new misses, then new false positives, then resolved false positives.
+The tool then pairs false positives across runs one to one by image, class, and the selected IoU threshold. Paired boxes are persistent false positives. Unpaired candidate boxes are new, while unpaired baseline boxes are resolved. A false positive that moves to a different part of an image can therefore appear as one new and one resolved box even when the total count stays the same.
+
+When both models match the same annotation, the report highlights localization regressions and shows each model's IoU. Use `--min-localization-drop` to change the minimum absolute IoU drop reported. The default is `0.1` on the 0-to-1 IoU scale. Use `--top` to limit HTML previews. Samples that contribute to a failed gate appear first, followed by other changes.
+
+## Verify validation coverage
+
+Have your evaluator save the IDs of every image it finished processing, including images with zero predictions, and its class mapping. The coverage JSON contains an `image_ids` array and a `categories` array of `{id, name}` objects. The [demo coverage file](demo/coverage.json) describes the synthetic runs in this repo. For your own models, use the coverage produced by each run.
+
+```sh
+python -m yolo_regression.manifest --annotations demo/annotations.json --predictions demo/baseline.json --coverage demo/coverage.json --revision baseline-v1 > baseline-manifest.json
+python -m yolo_regression.manifest --annotations demo/annotations.json --predictions demo/candidate-equal-recall.json --coverage demo/coverage.json --revision candidate-v2 > candidate-manifest.json
+python -m yolo_regression --annotations demo/annotations.json --baseline demo/baseline.json --candidate demo/candidate-equal-recall.json --baseline-manifest baseline-manifest.json --candidate-manifest candidate-manifest.json --output reports/verified.html --json-output reports/verified.json
+```
+
+When both manifests are supplied, mismatched coverage, category mappings, or file hashes cause exit code `2` before evaluation. Both annotation digests must match the exact annotation file used for the comparison. Reports always include the SHA-256 hashes of the three inputs. Use `--baseline-revision` and `--candidate-revision` to include source revisions directly, or set them when generating the manifests.
 
 ## CI checks
 
@@ -56,7 +70,7 @@ Add `--json-output` to save a machine-readable report alongside the HTML. Schema
 python -m yolo_regression --annotations demo/annotations.json --baseline demo/baseline.json --candidate demo/candidate-equal-recall.json --gate-class 0 --max-new-misses 0 --output reports/yolo-regression.html --json-output reports/yolo-regression.json
 ```
 
-The washer class stays at 75% recall, but one newly missed object causes this command to fail. In a checkout of this project, copy the [GitHub Actions example](examples/github-actions/yolo-regression.yml) to `.github/workflows/yolo-regression.yml` to try the same check. It lists failing classes and affected images in the job summary and keeps both reports as artifacts when the gate fails. Replace the demo inputs and limits with your own for production use. [GitHub job summaries](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#adding-a-job-summary) · [Workflow artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data)
+The washer class stays at 75% recall, but one newly missed object causes this command to fail. In a checkout of this project, copy the [GitHub Actions example](examples/github-actions/yolo-regression.yml) to `.github/workflows/yolo-regression.yml` to try the same check. On pull requests, it reads the baseline predictions and annotations from the PR base commit and candidate predictions from the checked-out merge commit. On manual runs it uses the selected revision for both checkouts. It records both revisions, lists the images that contributed to failing rules, and keeps both reports as artifacts when a gate fails. Replace the demo inputs and limits with your own for production use. [GitHub job summaries](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#adding-a-job-summary) · [Workflow artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data)
 
 | Exit code | Meaning |
 | --- | --- |
@@ -89,7 +103,7 @@ Run the line for your client. Use `claude mcp list` or `codex mcp list` to verif
 
 Ask the client to compare `demo/baseline.json` and `demo/candidate.json` using `demo/annotations.json` and a 5-percentage-point recall gate. The `compare_yolo_predictions` tool returns a structured summary, the gate status, and a path to the full HTML report. A failed gate still returns a report. Paths must resolve inside `--workspace`. By default, each call creates a new file under `reports/` and leaves existing reports intact.
 
-The MCP tool also accepts `max_new_misses`, `max_new_false_positives`, and `gate_class_ids`. The result includes the failing rule and actual value in `gate_failures` for each threshold exceeded.
+The MCP tool also accepts `max_new_misses`, `max_new_false_positives`, and `gate_class_ids`. The result includes the failing rule and actual value in `gate_failures` for each threshold exceeded. Pass both `baseline_manifest` and `candidate_manifest` to verify coverage. Use `min_localization_drop` to set the localization reporting threshold.
 
 ### Use the Skill
 

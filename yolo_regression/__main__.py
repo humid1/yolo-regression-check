@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from .gates import GatePolicy
+from .manifest import Sources
 from .workflow import ComparisonOptions, run_comparison
 
 
@@ -21,6 +22,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-new-misses", type=int, help="每类允许的新增漏检数，用于 CI")
     parser.add_argument("--max-new-false-positives", type=int, help="每类允许的新增误检框数，用于 CI")
     parser.add_argument("--gate-class", type=int, action="append", default=[], help="仅检查指定类别 ID，可重复")
+    parser.add_argument("--min-localization-drop", type=float, default=ComparisonOptions.min_localization_drop,
+                        help="报告定位退步的最小 IoU 降幅（默认 0.1）")
+    parser.add_argument("--baseline-manifest", type=Path, help="基准运行清单 JSON")
+    parser.add_argument("--candidate-manifest", type=Path, help="候选运行清单 JSON")
+    parser.add_argument("--baseline-revision", help="记录到报告的基准版本")
+    parser.add_argument("--candidate-revision", help="记录到报告的候选版本")
     parser.add_argument("--ollama-model", help="可选的本地 Ollama 模型名，用于选择诊断检查")
     args = parser.parse_args(argv)
 
@@ -28,13 +35,17 @@ def main(argv: list[str] | None = None) -> int:
         gate = GatePolicy(args.max_recall_drop_pp, args.max_new_misses,
                           args.max_new_false_positives, tuple(args.gate_class))
         options = ComparisonOptions(confidence=args.confidence, iou=args.iou, top=args.top,
-                                    gate=gate, ollama_model=args.ollama_model)
+                                    gate=gate, ollama_model=args.ollama_model,
+                                    min_localization_drop=args.min_localization_drop)
+        sources = Sources(args.baseline_manifest, args.candidate_manifest,
+                          args.baseline_revision, args.candidate_revision)
     except ValueError as error:
         parser.error(str(error))
 
     try:
         result = run_comparison(args.annotations, args.baseline, args.candidate, args.output,
-                                options=options, images_dir=args.images_dir, json_output=args.json_output)
+                                options=options, images_dir=args.images_dir, json_output=args.json_output,
+                                sources=sources)
     except (ValueError, OSError, RuntimeError) as error:
         print(f"诊断失败 — {error}", file=sys.stderr)
         return 2

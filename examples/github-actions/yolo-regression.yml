@@ -18,15 +18,27 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Check out baseline validation inputs
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: baseline-checkout
+          sparse-checkout: demo
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Compare predictions
+        env:
+          BASELINE_REVISION: ${{ github.event.pull_request.base.sha || github.sha }}
+          CANDIDATE_REVISION: ${{ github.sha }}
         run: >-
           python -m yolo_regression
-          --annotations demo/annotations.json
-          --baseline demo/baseline.json
+          --annotations baseline-checkout/demo/annotations.json
+          --baseline baseline-checkout/demo/baseline.json
           --candidate demo/candidate-equal-recall.json
+          --baseline-revision "$BASELINE_REVISION"
+          --candidate-revision "$CANDIDATE_REVISION"
           --gate-class 0
           --max-new-misses 0
           --max-new-false-positives 0
@@ -47,6 +59,11 @@ jobs:
 
           result = json.loads(Path('reports/yolo-regression.json').read_text(encoding='utf-8'))
           lines = ['## YOLO regression check', '', f"Gate **{result['gate_status']}**", '']
+          for role in ('baseline', 'candidate'):
+              revision = result['provenance'][role]['revision']
+              if revision:
+                  lines.append(f"- {role.capitalize()} revision {cell(revision)}")
+          lines.append('')
           failures = result['gate_failures']
           if failures:
               lines.extend(['| Category | Metric | Actual | Limit |', '| --- | --- | ---: | ---: |'])
@@ -54,9 +71,8 @@ jobs:
                   name = cell(f"{row['category_name']} ({row['category_id']})")
                   lines.append(f"| {name} | {cell(row['metric'])} | {row['actual']} | {row['limit']} |")
 
-          failed_classes = set(result['failed_category_ids'])
           rows = [row for row in result['sample_previews']
-                  if not failed_classes or failed_classes.intersection(row['changed_category_ids'])]
+                  if not failures or row['gate_evidence']]
           if rows:
               lines.extend(['', '| Affected sample | New misses | New false positives |', '| --- | ---: | ---: |'])
               for row in rows[:10]:

@@ -4,9 +4,10 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .diagnostics import Diagnosis, diagnose
-from .evaluation import Comparison, compare
+from .evaluation import DEFAULT_LOCALIZATION_DROP, Comparison, compare
 from .gates import GatePolicy, GateResult, evaluate_gate
-from .inputs import load_dataset, load_predictions
+from .inputs import load_dataset, load_predictions, read_json_document
+from .manifest import Provenance, Sources, verify_sources
 from .report import render_report
 from .summary import build_summary
 
@@ -18,6 +19,7 @@ class ComparisonOptions:
     top: int = 20
     gate: GatePolicy = GatePolicy()
     ollama_model: str | None = None
+    min_localization_drop: float = DEFAULT_LOCALIZATION_DROP
 
     def __post_init__(self):
         if not 0 <= self.confidence <= 1:
@@ -26,6 +28,8 @@ class ComparisonOptions:
             raise ValueError("--iou 应大于 0 且小于或等于 1")
         if self.top < 0:
             raise ValueError("--top 应为非负整数")
+        if not 0 < self.min_localization_drop <= 1:
+            raise ValueError("--min-localization-drop 应大于 0 且小于或等于 1")
         if self.ollama_model is not None and not self.ollama_model.strip():
             raise ValueError("--ollama-model 需要非空模型名")
 
@@ -36,6 +40,7 @@ class ComparisonRun:
     diagnosis: Diagnosis
     gate: GateResult
     report_path: Path
+    provenance: Provenance
 
 
 def _write_text(path: Path, content: str, overwrite: bool):
@@ -57,9 +62,12 @@ def _write_text(path: Path, content: str, overwrite: bool):
 
 def run_comparison(annotations: Path, baseline: Path, candidate: Path, output: Path, *,
                    options: ComparisonOptions, images_dir: Path | None = None,
-                   json_output: Path | None = None, overwrite: bool = True) -> ComparisonRun:
+                   json_output: Path | None = None, overwrite: bool = True,
+                   sources: Sources = Sources()) -> ComparisonRun:
     output = output.resolve()
     input_paths = {annotations.resolve(), baseline.resolve(), candidate.resolve()}
+    input_paths.update(path.resolve() for path in (sources.baseline_manifest, sources.candidate_manifest)
+                       if path is not None)
     if output in input_paths:
         raise ValueError("报告输出路径与输入文件相同")
     if json_output is not None:
@@ -71,15 +79,21 @@ def run_comparison(annotations: Path, baseline: Path, candidate: Path, output: P
         if not images_dir.is_dir():
             raise ValueError(f"{images_dir} 应为样本图片目录")
 
-    dataset = load_dataset(annotations)
-    baseline_predictions = load_predictions(baseline, dataset)
-    candidate_predictions = load_predictions(candidate, dataset)
-    comparison = compare(dataset, baseline_predictions, candidate_predictions, options.confidence, options.iou)
+    document = read_json_document(annotations)
+    dataset, annotations_sha256 = load_dataset(document), document.sha256
+    document = read_json_document(baseline)
+    baseline_predictions, baseline_sha256 = load_predictions(document, dataset), document.sha256
+    document = read_json_document(candidate)
+    candidate_predictions, candidate_sha256 = load_predictions(document, dataset), document.sha256
+    del document
+    provenance = verify_sources(dataset, annotations_sha256, baseline_sha256, candidate_sha256, sources)
+    comparison = compare(dataset, baseline_predictions, candidate_predictions, options.confidence, options.iou,
+                         options.min_localization_drop)
     gate = evaluate_gate(comparison, options.gate)
     diagnosis = diagnose(comparison, options.ollama_model)
-    html = render_report(comparison, diagnosis, images_dir, options.top, gate)
+    html = render_report(comparison, diagnosis, images_dir, options.top, gate, provenance)
     _write_text(output, html, overwrite)
     if json_output is not None:
-        summary = build_summary(comparison, diagnosis, gate, output)
+        summary = build_summary(comparison, diagnosis, gate, output, provenance)
         _write_text(json_output, json.dumps(asdict(summary), ensure_ascii=False, indent=2) + "\n", overwrite)
-    return ComparisonRun(comparison, diagnosis, gate, output)
+    return ComparisonRun(comparison, diagnosis, gate, output, provenance)
