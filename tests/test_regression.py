@@ -48,6 +48,32 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(result.candidate.false_positives, {image.id: [lower]})
         self.assertEqual(result.classes[0].total, 1)
 
+    def test_replaced_false_positive_is_visible_even_when_counts_match(self):
+        image = Image(1, "sample.jpg", 100, 100)
+        truth = (5.0, 5.0, 10.0, 10.0)
+        dataset = Dataset({1: image}, {0: "item"}, [Label(0, 1, 0, truth, False)])
+        correct = Detection(1, 0, truth, 0.9)
+        previous = Detection(1, 0, (25.0, 25.0, 10.0, 10.0), 0.8)
+        current = Detection(1, 0, (75.0, 75.0, 10.0, 10.0), 0.8)
+        result = compare(dataset, [correct, previous], [correct, current], 0.3, 0.5)
+        row = result.classes[0]
+        self.assertEqual((row.baseline_fp, row.candidate_fp), (1, 1))
+        self.assertEqual((row.added_fp, row.resolved_fp, row.persistent_fp), (1, 1, 0))
+        self.assertEqual(result.images[0].false_positives.added, (current,))
+        self.assertEqual(result.images[0].false_positives.resolved, (previous,))
+
+    def test_false_positive_matching_reassigns_a_pair_to_preserve_both_matches(self):
+        image = Image(1, "sample.jpg", 100, 100)
+        truth = (70.0, 70.0, 10.0, 10.0)
+        dataset = Dataset({1: image}, {0: "item"}, [Label(0, 1, 0, truth, False)])
+        left = Detection(1, 0, (10.0, 10.0, 10.0, 10.0), 0.9)
+        right = Detection(1, 0, (14.0, 10.0, 10.0, 10.0), 0.8)
+        middle = Detection(1, 0, (11.0, 10.0, 10.0, 10.0), 0.95)
+        result = compare(dataset, [left, right], [middle, left], 0.3, 0.5)
+        row = result.classes[0]
+        self.assertEqual((row.added_fp, row.resolved_fp, row.persistent_fp), (0, 0, 2))
+        self.assertEqual(result.images, [])
+
     def test_ci_writes_report_even_if_recall_gate_fails(self):
         with tempfile.TemporaryDirectory(dir=PROJECT) as directory:
             path = Path(directory) / "report.html"
@@ -62,6 +88,40 @@ class RegressionTests(unittest.TestCase):
             self.assertIn("75.0% → 50.0%", failed)
             self.assertIn('class="box weak"', failed)
             self.assertIn("通过。", passed)
+
+    def test_new_miss_gate_blocks_equal_recall_and_preserves_both_reports(self):
+        with tempfile.TemporaryDirectory(dir=PROJECT) as directory:
+            report = Path(directory) / "report.html"
+            data = Path(directory) / "report.json"
+            args = ["--annotations", str(DEMO / "annotations.json"), "--baseline", str(DEMO / "baseline.json"),
+                    "--candidate", str(DEMO / "candidate-equal-recall.json"), "--output", str(report),
+                    "--json-output", str(data), "--max-recall-drop-pp", "0"]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(args), 0)
+                self.assertEqual(main([*args, "--gate-class", "0", "--max-new-misses", "0"]), 1)
+            result = json.loads(data.read_text(encoding="utf-8"))
+            self.assertEqual(result["schema_version"], 1)
+            self.assertEqual(result["gate_status"], "failed")
+            self.assertEqual(result["new_misses"], 1)
+            self.assertEqual(result["recovered"], 1)
+            self.assertEqual(result["class_changes"][0]["recall_drop_pp"], 0)
+            self.assertEqual(result["sample_previews"][0]["file_name"], "line-001.jpg")
+            failure, = result["gate_failures"]
+            self.assertEqual((failure["category_id"], failure["metric"], failure["actual"], failure["limit"]),
+                             (0, "new_misses", 1, 0))
+            self.assertIn("未通过", report.read_text(encoding="utf-8"))
+
+    def test_false_positive_gate_checks_only_selected_classes(self):
+        with tempfile.TemporaryDirectory(dir=PROJECT) as directory:
+            report = Path(directory) / "report.html"
+            args = ["--annotations", str(DEMO / "annotations.json"), "--baseline", str(DEMO / "baseline.json"),
+                    "--candidate", str(DEMO / "candidate.json"), "--output", str(report),
+                    "--max-new-false-positives", "0"]
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main([*args, "--gate-class", "0"]), 0)
+                self.assertEqual(main([*args, "--gate-class", "1"]), 1)
+                self.assertEqual(main([*args, "--gate-class", "999"]), 2)
+            self.assertIn('class="box new-fp"', report.read_text(encoding="utf-8"))
 
     def test_rejects_mismatched_image_id_type(self):
         with tempfile.TemporaryDirectory(dir=PROJECT) as directory:

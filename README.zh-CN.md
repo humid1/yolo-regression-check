@@ -4,7 +4,7 @@
 
 在同一份带标注的验证集上对比基准 YOLO 模型与候选模型。HTML 报告展示各类别召回率、精确率和误检数的变化，并把受影响图片的标注框、基准预测框和候选预测框并排展示。
 
-你可以用报告复查新出现的漏检，找出低置信度预测或可能的类别混淆，也可以在 CI 中拦截召回率下降过多的模型版本。命令行工具只使用 Python 标准库，默认离线运行。
+你可以用报告复查新出现的漏检，找出低置信度预测或可能的类别混淆，也可以在 CI 中拦截超出阈值的模型版本。命令行工具只使用 Python 标准库，默认离线运行。
 
 ## 快速开始
 
@@ -35,23 +35,40 @@ python -m yolo_regression --annotations demo/annotations.json --baseline demo/ba
 python -m yolo_regression --annotations instances_val.json --baseline baseline/predictions.json --candidate candidate/predictions.json --images-dir images/val --confidence 0.3 --iou 0.5 --max-recall-drop-pp 5 --output report.html
 ```
 
-在同一张图的同一类别内，工具按置信度从高到低处理预测，同时满足置信度和 IoU 阈值时，会匹配 IoU 最大且尚未匹配的标注。`iscrowd` 标注不计入召回率的分母。未匹配的同类预测有足够面积与 `iscrowd` 标注重叠时，不计为误检。报告指标基于选定的置信度和 IoU 阈值。可用 `--top` 限制展示样本数量，样本优先按新增漏检数排序，其次按误检增加数排序。
+在同一张图的同一类别内，工具按置信度从高到低处理预测，同时满足置信度和 IoU 阈值时，会匹配 IoU 最大且尚未匹配的标注。`iscrowd` 标注不计入召回率的分母。未匹配的同类预测有足够面积与 `iscrowd` 标注重叠时，不计为误检。
+
+工具再按图片、类别和所选的 IoU 阈值，对两版误检框做一对一匹配。配对的是持续误检，未配对的候选框是新增误检，未配对的基准框是消除的误检。因此，误检框换到图片的另一处时，即使总数相同，也可能同时记录一个新增和一个消除的误检。可用 `--top` 限制 HTML 样本数，样本依次按新增漏检、新增误检和消除误检数量排序。
 
 ## CI 检查
 
-用 `--max-recall-drop-pp` 设置每个类别允许的最大召回降幅，单位为**百分点**。例如，从 75% 降到 50% 是下降 25 个百分点。超出阈值时仍会写出报告，可在 CI 中将它作为构建产物保留。
+可以按类别启用一项或多项阈值。指标超过阈值时检查失败，仍会写出报告。
+
+| 参数 | 检查内容 |
+| --- | --- |
+| `--max-recall-drop-pp` | 允许的净召回降幅，单位为**百分点**。从 75% 降到 50% 是下降 25 个百分点。 |
+| `--max-new-misses` | 允许的新增漏检数，对应基准模型检出而候选模型漏掉的标注。 |
+| `--max-new-false-positives` | 允许的新增误检框数，对应候选模型中未配对的误检框。 |
+| `--gate-class ID` | 仅检查指定的标注类别 ID。可重复指定多个类别。默认检查全部类别。 |
+
+加上 `--json-output` 可同时保存机器可读的报告。JSON 的 `schema_version` 为 `1`，记录失败类别 ID、指标、实测值和阈值。JSON 包含全部受影响样本，HTML 的预览数量可单独设置。
+
+```sh
+python -m yolo_regression --annotations demo/annotations.json --baseline demo/baseline.json --candidate demo/candidate-equal-recall.json --gate-class 0 --max-new-misses 0 --output reports/yolo-regression.html --json-output reports/yolo-regression.json
+```
+
+垫片类别的召回率仍为 75%，但一处新增漏检会使上面的命令失败。把本项目中的 [GitHub Actions 示例](examples/github-actions/yolo-regression.yml) 复制到 `.github/workflows/yolo-regression.yml`，即可试跑同样的检查。门禁失败后，任务摘要仍会列出失败类别和相关图片，HTML 和 JSON 报告也会保留为工作流产物。用于生产时，替换成自己的数据路径和阈值。 [GitHub 任务摘要](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#adding-a-job-summary) · [工作流产物](https://docs.github.com/en/actions/tutorials/store-and-share-data)
 
 | 退出码 | 含义 |
 | --- | --- |
 | `0` | 报告生成成功，已配置的检查通过。 |
-| `1` | 至少一个类别的召回降幅超过阈值。 |
+| `1` | 至少一个受检类别的指标超过配置的阈值。 |
 | `2` | 参数、输入或输出有误。 |
 
 ## 可选的本地 Ollama 诊断
 
 默认检查新增漏检最多的类别。工具会按标注框面积分组，并检查新增漏检附近是否有置信度低于阈值的同类别预测，或者置信度达到阈值的其他类别预测。
 
-加上 `--ollama-model YOUR_LOCAL_MODEL`，即可让本地 Ollama 模型根据已收集的统计选择下一项检查。请求发往 `127.0.0.1:11434`，只包含汇总结果和预定义的检查名称。Ollama 不可用或响应无效时，工具会使用内置规则完成剩余检查。CI 结果由配置的召回阈值决定。 [Ollama 结构化输出文档](https://docs.ollama.com/capabilities/structured-outputs)
+加上 `--ollama-model YOUR_LOCAL_MODEL`，即可让本地 Ollama 模型根据已收集的统计选择下一项检查。请求发往 `127.0.0.1:11434`，只包含汇总结果和预定义的检查名称。Ollama 不可用或响应无效时，工具会使用内置规则完成剩余检查。CI 结果由配置的门禁阈值决定。 [Ollama 结构化输出文档](https://docs.ollama.com/capabilities/structured-outputs)
 
 ## 接入 Claude Code、Codex 或其他 MCP 客户端
 
@@ -71,6 +88,8 @@ codex mcp add yolo-regression -- "/absolute/path/to/python" -m yolo_regression.m
 执行所用客户端对应的命令，通过 `claude mcp list` 或 `codex mcp list` 确认注册后，开启新会话。其他本地 MCP 客户端可用同一个解释器和参数，通过 `stdio` 连接。 [Claude Code MCP 配置](https://code.claude.com/docs/en/mcp) · [Codex MCP 配置](https://developers.openai.com/codex/mcp)
 
 试着让客户端用 `demo/annotations.json` 对比 `demo/baseline.json` 和 `demo/candidate.json`，并设置 5 个百分点的召回降幅阈值。`compare_yolo_predictions` 工具会返回结构化诊断摘要、阈值检查结果和完整 HTML 报告路径。超出阈值时仍会生成报告。所有路径解析后都须位于 `--workspace` 目录内，每次调用默认在 `reports/` 下生成一份新报告，已有报告会保留。
+
+MCP 工具也接受 `max_new_misses`、`max_new_false_positives` 和 `gate_class_ids`。如果某类指标超过阈值，可从 `gate_failures` 获取具体规则和实测值。
 
 ### 使用 Skill
 

@@ -1,12 +1,14 @@
-import math
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .diagnostics import Diagnosis, diagnose
-from .evaluation import ClassChange, Comparison, compare
+from .evaluation import Comparison, compare
+from .gates import GatePolicy, GateResult, evaluate_gate
 from .inputs import load_dataset, load_predictions
 from .report import render_report
+from .summary import build_summary
 
 
 @dataclass(frozen=True)
@@ -14,7 +16,7 @@ class ComparisonOptions:
     confidence: float = 0.3
     iou: float = 0.5
     top: int = 20
-    max_recall_drop_pp: float | None = None
+    gate: GatePolicy = GatePolicy()
     ollama_model: str | None = None
 
     def __post_init__(self):
@@ -24,8 +26,6 @@ class ComparisonOptions:
             raise ValueError("--iou 应大于 0 且小于或等于 1")
         if self.top < 0:
             raise ValueError("--top 应为非负整数")
-        if self.max_recall_drop_pp is not None and not 0 <= self.max_recall_drop_pp <= 100:
-            raise ValueError("--max-recall-drop-pp 应在 0 到 100 之间")
         if self.ollama_model is not None and not self.ollama_model.strip():
             raise ValueError("--ollama-model 需要非空模型名")
 
@@ -34,17 +34,17 @@ class ComparisonOptions:
 class ComparisonRun:
     comparison: Comparison
     diagnosis: Diagnosis
-    failures: list[ClassChange]
+    gate: GateResult
     report_path: Path
 
 
-def _write_report(path: Path, html: str, overwrite: bool):
+def _write_text(path: Path, content: str, overwrite: bool):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
         with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False) as handle:
             temporary = Path(handle.name)
-            handle.write(html)
+            handle.write(content)
         if overwrite:
             temporary.replace(path)
         else:
@@ -57,10 +57,15 @@ def _write_report(path: Path, html: str, overwrite: bool):
 
 def run_comparison(annotations: Path, baseline: Path, candidate: Path, output: Path, *,
                    options: ComparisonOptions, images_dir: Path | None = None,
-                   overwrite: bool = True) -> ComparisonRun:
+                   json_output: Path | None = None, overwrite: bool = True) -> ComparisonRun:
     output = output.resolve()
-    if output in (annotations.resolve(), baseline.resolve(), candidate.resolve()):
+    input_paths = {annotations.resolve(), baseline.resolve(), candidate.resolve()}
+    if output in input_paths:
         raise ValueError("报告输出路径与输入文件相同")
+    if json_output is not None:
+        json_output = json_output.resolve()
+        if json_output in input_paths or json_output == output:
+            raise ValueError("JSON 输出路径与输入文件或 HTML 报告相同")
     if images_dir is not None:
         images_dir = images_dir.resolve()
         if not images_dir.is_dir():
@@ -70,12 +75,11 @@ def run_comparison(annotations: Path, baseline: Path, candidate: Path, output: P
     baseline_predictions = load_predictions(baseline, dataset)
     candidate_predictions = load_predictions(candidate, dataset)
     comparison = compare(dataset, baseline_predictions, candidate_predictions, options.confidence, options.iou)
+    gate = evaluate_gate(comparison, options.gate)
     diagnosis = diagnose(comparison, options.ollama_model)
-    failures = []
-    limit = options.max_recall_drop_pp
-    if limit is not None:
-        failures = [row for row in comparison.classes if row.recall_drop_pp > limit
-                    and not math.isclose(row.recall_drop_pp, limit, rel_tol=0, abs_tol=1e-10)]
-    html = render_report(comparison, diagnosis, images_dir, options.top, limit, failures)
-    _write_report(output, html, overwrite)
-    return ComparisonRun(comparison, diagnosis, failures, output)
+    html = render_report(comparison, diagnosis, images_dir, options.top, gate)
+    _write_text(output, html, overwrite)
+    if json_output is not None:
+        summary = build_summary(comparison, diagnosis, gate, output)
+        _write_text(json_output, json.dumps(asdict(summary), ensure_ascii=False, indent=2) + "\n", overwrite)
+    return ComparisonRun(comparison, diagnosis, gate, output)

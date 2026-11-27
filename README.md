@@ -4,7 +4,7 @@
 
 Compare a baseline and a candidate YOLO model on the same labeled validation set. The HTML report shows changes in recall, precision, and false positives for each class and puts ground truth, baseline predictions, and candidate predictions side by side for affected images.
 
-Use the report to review newly missed objects, investigate low-confidence predictions or possible class mix-ups, and catch unacceptable recall drops in CI. The CLI uses Python's standard library and runs offline by default.
+Use the report to review newly missed objects, investigate low-confidence predictions or possible class mix-ups, and gate model updates in CI. The CLI uses Python's standard library and runs offline by default.
 
 ## Quick start
 
@@ -35,23 +35,40 @@ Use original-image pixel coordinates in `[x, y, width, height]` format, with `x`
 python -m yolo_regression --annotations instances_val.json --baseline baseline/predictions.json --candidate candidate/predictions.json --images-dir images/val --confidence 0.3 --iou 0.5 --max-recall-drop-pp 5 --output report.html
 ```
 
-For each image and class, the CLI processes predictions in descending confidence order. Each prediction is matched to the unmatched annotation with the highest IoU, provided both thresholds are met. Crowd annotations are excluded from the recall denominator. An unmatched prediction is excluded from the false-positive count when enough of its area overlaps a crowd annotation of the same class. Metrics are calculated at the selected confidence and IoU thresholds. Use `--top` to limit sample previews, which are ordered by newly missed objects and then by increases in false positives.
+For each image and class, the CLI processes predictions in descending confidence order. Each prediction is matched to the unmatched annotation with the highest IoU, provided both thresholds are met. Crowd annotations are excluded from the recall denominator. An unmatched prediction is excluded from the false-positive count when enough of its area overlaps a crowd annotation of the same class.
+
+The tool then pairs false positives across runs one to one by image, class, and the selected IoU threshold. Paired boxes are persistent false positives. Unpaired candidate boxes are new, while unpaired baseline boxes are resolved. A false positive that moves to a different part of an image can therefore appear as one new and one resolved box even when the total count stays the same. Use `--top` to limit HTML previews, which prioritize new misses, then new false positives, then resolved false positives.
 
 ## CI checks
 
-Set `--max-recall-drop-pp` to the maximum allowed recall drop in **percentage points** for any class. For example, a drop from 75% to 50% is 25 percentage points. The report is written even when the check fails, so CI can keep it as a build artifact.
+Use one or more limits per class. A metric must exceed its limit to fail the check. The report is written even when the check fails.
+
+| Option | What it checks |
+| --- | --- |
+| `--max-recall-drop-pp` | Maximum net recall drop in **percentage points**. A drop from 75% to 50% is 25 percentage points. |
+| `--max-new-misses` | Maximum number of annotations matched by the baseline and missed by the candidate. |
+| `--max-new-false-positives` | Maximum number of new, unpaired false-positive boxes. |
+| `--gate-class ID` | Check only the given annotation category IDs. Repeat the option to select multiple categories. Every class is checked by default. |
+
+Add `--json-output` to save a machine-readable report alongside the HTML. Schema version `1` includes gate failures with the class ID, metric, observed value, and limit. The JSON includes all affected samples regardless of the HTML preview limit.
+
+```sh
+python -m yolo_regression --annotations demo/annotations.json --baseline demo/baseline.json --candidate demo/candidate-equal-recall.json --gate-class 0 --max-new-misses 0 --output reports/yolo-regression.html --json-output reports/yolo-regression.json
+```
+
+The washer class stays at 75% recall, but one newly missed object causes this command to fail. In a checkout of this project, copy the [GitHub Actions example](examples/github-actions/yolo-regression.yml) to `.github/workflows/yolo-regression.yml` to try the same check. It lists failing classes and affected images in the job summary and keeps both reports as artifacts when the gate fails. Replace the demo inputs and limits with your own for production use. [GitHub job summaries](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#adding-a-job-summary) · [Workflow artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data)
 
 | Exit code | Meaning |
 | --- | --- |
 | `0` | The report was generated and any configured check passed. |
-| `1` | At least one class exceeded the configured recall drop. |
+| `1` | At least one checked class exceeded a configured limit. |
 | `2` | An argument, input, or output error occurred. |
 
 ## Optional local Ollama diagnostics
 
 By default, the CLI investigates the class with the most newly missed objects. It groups annotations by bounding-box area, then checks whether new misses overlap a same-class prediction below the confidence threshold or a prediction of a different class at or above it.
 
-Add `--ollama-model YOUR_LOCAL_MODEL` to let a model running in Ollama choose the next check based on the aggregate results. Requests go to `127.0.0.1:11434` and include only aggregate findings and predefined check names. If Ollama is unavailable or returns an invalid response, the CLI completes the remaining checks using its built-in rules. The CI outcome is determined by the configured recall threshold. [Ollama structured outputs documentation](https://docs.ollama.com/capabilities/structured-outputs)
+Add `--ollama-model YOUR_LOCAL_MODEL` to let a model running in Ollama choose the next check based on the aggregate results. Requests go to `127.0.0.1:11434` and include only aggregate findings and predefined check names. If Ollama is unavailable or returns an invalid response, the CLI completes the remaining checks using its built-in rules. The configured CI limits determine the gate outcome. [Ollama structured outputs documentation](https://docs.ollama.com/capabilities/structured-outputs)
 
 ## Use with Claude Code, Codex, or another MCP client
 
@@ -71,6 +88,8 @@ codex mcp add yolo-regression -- "/absolute/path/to/python" -m yolo_regression.m
 Run the line for your client. Use `claude mcp list` or `codex mcp list` to verify registration, then start a new session. Other local MCP clients can use the same Python interpreter and arguments with the `stdio` transport. [Claude Code MCP setup](https://code.claude.com/docs/en/mcp) · [Codex MCP setup](https://developers.openai.com/codex/mcp)
 
 Ask the client to compare `demo/baseline.json` and `demo/candidate.json` using `demo/annotations.json` and a 5-percentage-point recall gate. The `compare_yolo_predictions` tool returns a structured summary, the gate status, and a path to the full HTML report. A failed gate still returns a report. Paths must resolve inside `--workspace`. By default, each call creates a new file under `reports/` and leaves existing reports intact.
+
+The MCP tool also accepts `max_new_misses`, `max_new_false_positives`, and `gate_class_ids`. The result includes the failing rule and actual value in `gate_failures` for each threshold exceeded.
 
 ### Use the Skill
 

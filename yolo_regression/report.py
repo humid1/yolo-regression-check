@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .diagnostics import Diagnosis
 from .evaluation import ClassChange, Comparison, ImageChange, overlap
+from .gates import GateResult
 from .inputs import Box, Image
 
 STYLE = """
@@ -39,13 +40,18 @@ figcaption { font-weight: 600; margin: .25rem 0; }
 .label { color: #edf4f3; }
 .missed { color: #f6a4da; border-style: dashed; }
 .match { color: #5de0c9; }
-.fp { color: #ff8f7f; border-style: dashed; }
+.fp { color: #c3b9aa; border-style: dashed; }
+.new-fp { color: #ff8f7f; border-style: dashed; }
+.resolved-fp { color: #a8cfff; border-style: dotted; }
 .weak { color: #ffd574; border-style: dotted; }
 .legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; }
 .legend span::before { content: ''; display: inline-block; width: .65rem; height: .65rem; margin-right: .3rem; border: 2px solid currentColor; vertical-align: -.08em; border-radius: 2px; background: #21333e; }
 .legend .label { color: #3b5765; } .legend .missed { color: #a43080; }
-.legend .match { color: #087e72; } .legend .fp { color: #a52d42; } .legend .weak { color: #8d5e0d; }
+.legend .match { color: #087e72; } .legend .fp { color: #66594c; } .legend .weak { color: #8d5e0d; }
+.legend .new-fp { color: #a52d42; } .legend .resolved-fp { color: #285c98; }
 """
+
+GATE_NAMES = {"recall_drop_pp": "召回降幅（百分点）", "new_misses": "新增漏检", "new_false_positives": "新增误检框"}
 
 
 def _table(headers, rows):
@@ -66,7 +72,7 @@ def _class_row(change: ClassChange):
     delta = f"{-change.recall_drop_pp:+.1f}" if change.recall_drop_pp else "0.0"
     return (change.name, change.total, f"{before_recall} → {after_recall}", delta if change.total else "—",
             f"{before_precision} → {after_precision}", f"{change.baseline_fp} → {change.candidate_fp}",
-            change.new_misses, change.recovered)
+            change.added_fp, change.resolved_fp, change.persistent_fp, change.new_misses, change.recovered)
 
 
 def _image_url(root: Path | None, file_name: str) -> str:
@@ -118,12 +124,16 @@ def _sample(comparison: Comparison, change: ImageChange, images_dir: Path | None
     label_boxes = [_box(image, label.box, "missed" if label.index in missed else "label",
                         dataset.categories[label.category_id]) for label in labels]
     panels = [("标注", label_boxes)]
-    for caption, evaluation in (("基准预测", comparison.baseline), ("候选预测", comparison.candidate)):
+    fp_changes = change.false_positives
+    for index, (caption, evaluation, change_style, changed_boxes) in enumerate((
+        ("基准预测", comparison.baseline, "resolved-fp", fp_changes.resolved),
+        ("候选预测", comparison.candidate, "new-fp", fp_changes.added),
+    )):
         matches = [evaluation.matches[label.index] for label in labels if label.index in evaluation.matches]
-        false_positives = evaluation.false_positives.get(image.id, ())
+        persistent = [pair[index] for pair in fp_changes.persistent]
         boxes = [
             _box(image, prediction.box, style, f"{dataset.categories[prediction.category_id]} {prediction.score:.2f}")
-            for style, predictions in (("match", matches), ("fp", false_positives))
+            for style, predictions in (("match", matches), ("fp", persistent), (change_style, changed_boxes))
             for prediction in predictions
         ]
         if evaluation is comparison.candidate:
@@ -142,19 +152,29 @@ def _sample(comparison: Comparison, change: ImageChange, images_dir: Path | None
         for caption, boxes in panels
     )
     return (f'<article class="sample"><h3>{file_name}</h3><p class="muted">图片 ID {escape(str(image.id))} · '
-            f'新增漏检 {len(change.new_misses)} · 误检增加 {change.added_fp}</p><div class="panels">{figures}</div></article>')
+            f'新增漏检 {len(change.new_misses)} · 新增误检 {change.added_fp} · 消除误检 {len(fp_changes.resolved)}'
+            f' · 持续误检 {len(fp_changes.persistent)}</p><div class="panels">{figures}</div></article>')
+
+
+def _gate_section(gate: GateResult) -> str:
+    if not gate.limits:
+        return ""
+    scope = ", ".join(map(str, gate.category_ids)) if gate.category_ids else "全部类别"
+    limits = " · ".join(f"{GATE_NAMES[metric]} ≤ {limit}" for metric, limit in gate.limits.items())
+    details = f'<p class="muted">检查范围 {scope} · {escape(limits)}</p>'
+    if not gate.failures:
+        return f"<p>通过。所有配置的门禁均通过。</p>{details}"
+    failures = _table(("类别", "指标", "实测", "阈值"), (
+        (f"{failure.category_name} ({failure.category_id})", GATE_NAMES[failure.metric],
+         format(failure.actual, ".6g"), format(failure.limit, ".6g")) for failure in gate.failures
+    ))
+    return f'<p class="bad">未通过。以下类别超出配置的门禁阈值。</p>{details}{failures}'
 
 
 def render_report(comparison: Comparison, diagnosis: Diagnosis, images_dir: Path | None, top: int,
-                  max_recall_drop_pp: float | None, failures: list[ClassChange]) -> str:
-    if failures:
-        failed_labels = "、".join(escape(item.name) for item in failures)
-        gate = f'<p class="bad">未通过。召回降幅超过 {max_recall_drop_pp:g} 个百分点的类别为 {failed_labels}。</p>'
-    elif max_recall_drop_pp is not None:
-        gate = f'<p>通过。各类别召回降幅均在 {max_recall_drop_pp:g} 个百分点以内。</p>'
-    else:
-        gate = ""
-    classes = _table(("类别", "标注数", "召回率", "召回变化（百分点）", "精确率", "误检数", "新增漏检", "恢复检出"),
+                  gate: GateResult) -> str:
+    classes = _table(("类别", "标注数", "召回率", "召回变化（百分点）", "精确率", "误检数", "新增误检",
+                      "消除误检", "持续误检", "新增漏检", "恢复检出"),
                      (_class_row(change) for change in comparison.classes))
     findings = "".join(f"<h3>{escape(item.title)}</h3>{_table(item.columns, item.rows)}<p>{escape(item.next_step)}</p>"
                        for item in diagnosis.findings)
@@ -162,20 +182,23 @@ def render_report(comparison: Comparison, diagnosis: Diagnosis, images_dir: Path
     samples = "".join(_sample(comparison, image, images_dir) for image in shown)
     sample_summary = f"展示 {len(shown)} / {len(comparison.images)} 张受影响图片。"
     misses = sum(change.new_misses for change in comparison.classes)
-    added_fp = sum(change.added_fp for change in comparison.images)
+    added_fp = sum(change.added_fp for change in comparison.classes)
+    resolved_fp = sum(change.resolved_fp for change in comparison.classes)
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
 <title>YOLO 模型回归诊断</title><style>{STYLE}</style></head><body><main>
 <header><h1>YOLO 模型回归诊断</h1>
 <p class="muted">基准模型与候选模型使用同一份标注 · 置信度 ≥ {comparison.confidence:g} · IoU ≥ {comparison.iou:g}</p>
-{gate}<div class="summary"><div><strong>{len(comparison.dataset.images)}</strong>验证集图片</div>
-<div><strong>{misses}</strong>新增漏检</div><div><strong>{added_fp}</strong>增加的误检</div></div></header>
+{_gate_section(gate)}<div class="summary"><div><strong>{len(comparison.dataset.images)}</strong>验证集图片</div>
+<div><strong>{misses}</strong>新增漏检</div><div><strong>{added_fp}</strong>新增误检</div>
+<div><strong>{resolved_fp}</strong>消除误检</div></div></header>
 <section><h2>类别变化</h2>{classes}
-<p class="muted">指标顺序为基准 → 候选。新增漏检按标注实例计算。增加的误检按图片和类别的计数增量汇总。</p></section>
+<p class="muted">指标顺序为基准 → 候选。两版误检框在同一图片与类别中按 IoU 一对一匹配。</p></section>
 <section><h2>漏检诊断</h2><p>{escape(diagnosis.message)}</p>{findings}</section>
 <section><h2>样本复查</h2><p>{sample_summary}</p>
 <div class="legend"><span class="label">标注</span><span class="missed">新增漏检</span>
-<span class="match">正确匹配</span><span class="fp">误检</span><span class="weak">低分同类别预测</span></div>
+<span class="match">正确匹配</span><span class="new-fp">新增误检</span><span class="resolved-fp">消除误检</span>
+<span class="fp">持续误检</span><span class="weak">低分同类别预测</span></div>
 {samples}</section></main></body></html>
 """

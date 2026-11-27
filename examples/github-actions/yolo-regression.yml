@@ -1,0 +1,75 @@
+name: YOLO regression check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'demo/*.json'
+      - 'yolo_regression/**'
+      - '.github/workflows/yolo-regression.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Compare predictions
+        run: >-
+          python -m yolo_regression
+          --annotations demo/annotations.json
+          --baseline demo/baseline.json
+          --candidate demo/candidate-equal-recall.json
+          --gate-class 0
+          --max-new-misses 0
+          --max-new-false-positives 0
+          --output reports/yolo-regression.html
+          --json-output reports/yolo-regression.json
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('reports/yolo-regression.json') != '' }}
+        run: |
+          python - <<'PY'
+          from html import escape
+          import json
+          import os
+          from pathlib import Path
+
+          def cell(value):
+              text = ' '.join(str(value).splitlines())
+              return f"<code>{escape(text).replace('|', '&#124;')}</code>"
+
+          result = json.loads(Path('reports/yolo-regression.json').read_text(encoding='utf-8'))
+          lines = ['## YOLO regression check', '', f"Gate **{result['gate_status']}**", '']
+          failures = result['gate_failures']
+          if failures:
+              lines.extend(['| Category | Metric | Actual | Limit |', '| --- | --- | ---: | ---: |'])
+              for row in failures[:20]:
+                  name = cell(f"{row['category_name']} ({row['category_id']})")
+                  lines.append(f"| {name} | {cell(row['metric'])} | {row['actual']} | {row['limit']} |")
+
+          failed_classes = set(result['failed_category_ids'])
+          rows = [row for row in result['sample_previews']
+                  if not failed_classes or failed_classes.intersection(row['changed_category_ids'])]
+          if rows:
+              lines.extend(['', '| Affected sample | New misses | New false positives |', '| --- | ---: | ---: |'])
+              for row in rows[:10]:
+                  lines.append(f"| {cell(row['file_name'])} | {row['new_misses']} | {row['added_false_positives']} |")
+          lines.extend(['', 'Download the **yolo-regression** artifact for the full HTML and JSON reports.', ''])
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as output:
+              output.write('\n'.join(lines))
+          PY
+      - name: Keep regression reports
+        if: ${{ !cancelled() && hashFiles('reports/yolo-regression.*') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: yolo-regression
+          path: |
+            reports/yolo-regression.html
+            reports/yolo-regression.json

@@ -1,4 +1,4 @@
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 
 from .inputs import Box, Dataset, Detection, Id, Label
@@ -21,6 +21,8 @@ class ClassChange:
     candidate_fp: int
     new_misses: int
     recovered: int
+    added_fp: int
+    resolved_fp: int
 
     @property
     def recall_drop_pp(self) -> float:
@@ -28,12 +30,27 @@ class ClassChange:
             return 0.0
         return 100 * (self.baseline_tp - self.candidate_tp) / self.total
 
+    @property
+    def persistent_fp(self) -> int:
+        return self.baseline_fp - self.resolved_fp
+
+
+@dataclass(frozen=True)
+class FalsePositiveChanges:
+    added: tuple[Detection, ...] = ()
+    resolved: tuple[Detection, ...] = ()
+    persistent: tuple[tuple[Detection, Detection], ...] = ()
+
 
 @dataclass(frozen=True)
 class ImageChange:
     image_id: Id
     new_misses: list[Label]
-    added_fp: int
+    false_positives: FalsePositiveChanges
+
+    @property
+    def added_fp(self) -> int:
+        return len(self.false_positives.added)
 
 
 @dataclass
@@ -83,6 +100,53 @@ def _evaluate(labels_by_group, predictions, confidence, iou) -> Evaluation:
     return Evaluation(matches, dict(false_positives))
 
 
+def _pair_false_positives(baseline: list[Detection], candidate: list[Detection],
+                          iou: float) -> FalsePositiveChanges:
+    if not baseline or not candidate:
+        return FalsePositiveChanges(added=tuple(candidate), resolved=tuple(baseline))
+
+    baseline_by_class = defaultdict(list)
+    for index, box in enumerate(baseline):
+        baseline_by_class[box.category_id].append(index)
+
+    choices = []
+    for box in candidate:
+        overlaps = [(overlap(box.box, baseline[index].box), index)
+                    for index in baseline_by_class[box.category_id]]
+        choices.append([index for score, index in sorted(overlaps, key=lambda item: -item[0]) if score >= iou])
+
+    baseline_matches = {}
+    candidate_matches = {}
+    for start in range(len(candidate)):
+        # Search for a free baseline box, reassigning existing pairs along the path when necessary.
+        queue = deque([start])
+        previous = {}
+        while queue:
+            candidate_index = queue.popleft()
+            for baseline_index in choices[candidate_index]:
+                if baseline_index in previous:
+                    continue
+                previous[baseline_index] = candidate_index
+                if baseline_index in baseline_matches:
+                    queue.append(baseline_matches[baseline_index])
+                    continue
+                while baseline_index is not None:
+                    candidate_index = previous[baseline_index]
+                    baseline_matches[baseline_index] = candidate_index
+                    old_index = candidate_matches.get(candidate_index)
+                    candidate_matches[candidate_index] = baseline_index
+                    baseline_index = old_index
+                queue.clear()
+                break
+
+    return FalsePositiveChanges(
+        added=tuple(box for index, box in enumerate(candidate) if index not in candidate_matches),
+        resolved=tuple(box for index, box in enumerate(baseline) if index not in baseline_matches),
+        persistent=tuple((baseline[candidate_matches[index]], box)
+                         for index, box in enumerate(candidate) if index in candidate_matches),
+    )
+
+
 def compare(dataset: Dataset, baseline: list[Detection], candidate: list[Detection],
             confidence: float, iou: float) -> Comparison:
     labels_by_group = defaultdict(list)
@@ -104,24 +168,27 @@ def compare(dataset: Dataset, baseline: list[Detection], candidate: list[Detecti
     missed = Counter(dataset.labels[index].category_id for index in new_miss_ids)
     recovered = Counter(dataset.labels[index].category_id for index in recovered_ids)
 
+    images = []
+    added = Counter()
+    resolved = Counter()
+    for image_id in dataset.images:
+        image_misses = [label for label in labels_by_image.get(image_id, ()) if label.index in new_miss_ids]
+        fp_changes = _pair_false_positives(before.false_positives.get(image_id, []),
+                                           after.false_positives.get(image_id, []), iou)
+        added.update(box.category_id for box in fp_changes.added)
+        resolved.update(box.category_id for box in fp_changes.resolved)
+        if image_misses or fp_changes.added or fp_changes.resolved:
+            images.append(ImageChange(image_id, image_misses, fp_changes))
+    images.sort(key=lambda item: (-len(item.new_misses), -item.added_fp, -len(item.false_positives.resolved)))
+
     classes = [
         ClassChange(category_id, name, total[category_id], before_tp[category_id], after_tp[category_id],
-                    before_fp[category_id], after_fp[category_id], missed[category_id], recovered[category_id])
+                    before_fp[category_id], after_fp[category_id], missed[category_id], recovered[category_id],
+                    added[category_id], resolved[category_id])
         for category_id, name in dataset.categories.items()
         if total[category_id] or before_fp[category_id] or after_fp[category_id]
     ]
-    classes.sort(key=lambda item: (-item.recall_drop_pp, -item.new_misses,
-                                   -(item.candidate_fp - item.baseline_fp), item.category_id))
-
-    images = []
-    for image_id in dataset.images:
-        image_misses = [label for label in labels_by_image.get(image_id, ()) if label.index in new_miss_ids]
-        image_before_fp = Counter(item.category_id for item in before.false_positives.get(image_id, ()))
-        image_after_fp = Counter(item.category_id for item in after.false_positives.get(image_id, ()))
-        added_fp = sum((image_after_fp - image_before_fp).values())
-        if image_misses or added_fp:
-            images.append(ImageChange(image_id, image_misses, added_fp))
-    images.sort(key=lambda item: (-len(item.new_misses), -item.added_fp))
+    classes.sort(key=lambda item: (-item.recall_drop_pp, -item.new_misses, -item.added_fp, item.category_id))
 
     candidate_by_image = defaultdict(list)
     for detection in candidate:

@@ -33,12 +33,15 @@ class McpIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 tool_name = tools.tools[0].name
                 self.assertIsNotNone(tools.tools[0].outputSchema)
                 args = {"annotations": "demo/annotations.json", "baseline": "demo/baseline.json",
-                        "candidate": str(workspace / "demo" / "candidate.json"), "max_recall_drop_pp": 5}
+                        "candidate": str(workspace / "demo" / "candidate.json"), "max_recall_drop_pp": 5,
+                        "max_new_misses": 1, "gate_class_ids": [0]}
                 result = await session.call_tool(tool_name, args)
                 self.assertFalse(result.isError, result.content)
                 summary = result.structuredContent
                 self.assertEqual(summary["gate_status"], "failed")
                 self.assertEqual(summary["failed_category_ids"], [0])
+                self.assertEqual([failure["metric"] for failure in summary["gate_failures"]],
+                                 ["recall_drop_pp", "new_misses"])
                 self.assertEqual(summary["class_changes"][0]["recall_drop_pp"], 25)
                 self.assertEqual(summary["new_misses"], 2)
                 self.assertEqual(len(summary["findings"]), 2)
